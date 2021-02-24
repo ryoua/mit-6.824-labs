@@ -1,6 +1,9 @@
 package mr
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 import "log"
 import "net/rpc"
 import "hash/fnv"
@@ -30,20 +33,50 @@ func ihash(key string) int {
 //
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
+	worker := worker{
+		mapf:    mapf,
+		reducef: reducef,
+	}
+	worker.register()
+	worker.run()
+}
 
-	// Your worker implementation here.
+func (w *worker) register() *RegisterWorkerReply {
+	args := &RegisterWorkerArgs{}
+	reply := &RegisterWorkerReply{}
+	if call("Master.RegisterWorker", args, reply) {
+		return reply
+	} else {
+		return nil
+	}
+}
 
-	// uncomment to send the Example RPC to the master.
-	// CallExample()
+func (w *worker) run() {
+	for {
+		handleTask()
+	}
+}
+
+func (w *worker) doMapTask(mapTask *MapTask) {
 
 }
 
-type Work struct {
+func (w *worker) doReduceTask(reduceTask *ReduceTask) {
 
+}
+
+func (w *worker) requestTask() interface{} {
+
+}
+
+type worker struct {
+	id int
+	mapf func(string, string) []KeyValue
+	reducef func(string, []string) string
 }
 
 // 从 Master 中获取一个 Task
-func (w *Work) PullTask() *PullTaskReply {
+func (w *worker) PullTask() *PullTaskReply {
 	 args := &PullTaskArgs{}
 	 reply := &PullTaskReply{}
 	 if call("Master.GetTask", args, reply) {
@@ -53,10 +86,35 @@ func (w *Work) PullTask() *PullTaskReply {
 	 }
 }
 
+// 完成 MapTask
+func (w *worker) FinishMapTask(mapTask *MapTask) *ReportFinishTaskReply {
+	args := &ReportFinishTaskArgs{
+		TaskId:            mapTask.Id,
+		Phase:             MapPhase,
+		IntermediateFiles: nil,
+	}
+	reply := &ReportFinishTaskReply{}
+	if call("Master.ReportFinishTask", args, reply) {
+		return reply
+	} else {
+		return nil
+	}
+}
 
-
-
-
+// 完成 ReduceTask
+func (w *worker) FinishReduceTask(reduceTask *ReduceTask) *ReportFinishTaskReply {
+	args := &ReportFinishTaskArgs{
+		TaskId:            reduceTask.Id,
+		Phase:             ReducePhase,
+		IntermediateFiles: nil,
+	}
+	reply := &ReportFinishTaskReply{}
+	if call("Master.ReportFinishTask", args, reply) {
+		return reply
+	} else {
+		return nil
+	}
+}
 
 
 

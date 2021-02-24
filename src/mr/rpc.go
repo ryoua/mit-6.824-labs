@@ -31,6 +31,24 @@ type PullTaskReply struct {
 	Task interface{}
 }
 
+type ReportFinishTaskArgs struct {
+	TaskId int
+	Phase int
+	IntermediateFiles []string
+}
+
+type ReportFinishTaskReply struct {
+
+}
+
+type RegisterWorkerArgs struct {
+
+}
+
+type RegisterWorkerReply struct {
+	WorkerId int
+}
+
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the master.
 // Can't use the current directory since
