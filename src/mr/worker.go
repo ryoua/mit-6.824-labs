@@ -38,6 +38,29 @@ func Worker(mapf func(string, string) []KeyValue,
 
 }
 
+type Work struct {
+
+}
+
+// 从 Master 中获取一个 Task
+func (w *Work) PullTask() *PullTaskReply {
+	 args := &PullTaskArgs{}
+	 reply := &PullTaskReply{}
+	 if call("Master.GetTask", args, reply) {
+	 	return reply
+	 } else {
+	 	return nil
+	 }
+}
+
+
+
+
+
+
+
+
+
 //
 // example function to show how to make an RPC call to the master.
 //
