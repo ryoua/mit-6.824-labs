@@ -11,28 +11,6 @@ import "net/rpc"
 import "net/http"
 
 
-var workerSeq = 0
-
-type Master struct {
-	NMap    int
-	NReduce int
-
-	MapTasks    []*MapTask
-	ReduceTasks []*ReduceTask
-
-	Phase int
-
-	MapTaskChan    chan *MapTask
-	ReduceTaskChan chan *ReduceTask
-
-	IntermediateFiles [][]string
-
-	NCompleteMap    int
-	NCompleteReduce int
-
-	mu sync.Mutex
-}
-
 // 启动一个协程监听来自worker的rpc请求
 func (m *Master) server() {
 	rpc.Register(m)
@@ -47,159 +25,182 @@ func (m *Master) server() {
 	go http.Serve(l, nil)
 }
 
+type TaskStat struct {
+	Status int
+	WorkerId int
+	StartTime time.Time
+}
+
+type Master struct {
+	files []string
+	nReduce int
+	taskPhase TaskPhase
+	taskStats []TaskStat
+	mu sync.Mutex
+	done bool
+	workerSeq int
+	taskChan chan Task
+}
+
+const (
+	MaxTaskRunTime = time.Second * 5
+	ScheduleInterval = time.Millisecond * 500
+)
+
+const (
+	Ready = 0
+	Queue = 1
+	Running = 2
+	Finish = 3
+	Err = 4
+)
+
 // 返回 Master 是否完成
 func (m *Master) Done() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return len(m.ReduceTasks) == m.NCompleteReduce && m.Phase == Finish
+	r := m.done
+	return r
 }
 
 // 创建一个 Master
 func MakeMaster(files []string, nReduce int) *Master {
 	m := Master{}
 
-	// Your code here.
-	m.NReduce = nReduce
+	m.mu = sync.Mutex{}
+	m.nReduce = nReduce
+	m.files = files
+	if nReduce > len(files) {
+		m.taskChan = make(chan Task, nReduce)
+	} else {
+		m.taskChan = make(chan Task, len(m.files))
+	}
 
-	m.initMapTasks(files)
+	m.initMapTask()
+	go m.tickSchedule()
 	m.server()
+	DPrintf("master init")
 	return &m
 }
 
-// 初始化 Map 任务
-func (m *Master) initMapTasks(files []string) {
-	for i, file := range files {
-		mapTask := MapTask{
-			Id:       i,
-			FileName: file,
-			Status:   Ready,
-			NReduce:  m.NReduce,
-		}
-		if Debug {
-			log.Printf("maptask %+v have been created", mapTask)
-		}
-		m.MapTasks = append(m.MapTasks, &mapTask)
-		m.MapTaskChan <- &mapTask
+func (m *Master) initMapTask() {
+	m.taskPhase = MapPhase
+	m.taskStats = make([]TaskStat, len(m.files))
+}
+
+func (m *Master) initReduceTask() {
+	DPrintf("init reduce tasks")
+	m.taskPhase = ReducePhase
+	m.taskStats = make([]TaskStat, m.nReduce)
+}
+
+func (m *Master) tickSchedule() {
+	for !m.Done() {
+		go m.schedule()
+		time.Sleep(ScheduleInterval)
 	}
 }
 
-func (m *Master) initReduceTasks() {
-	for i := 0; i < m.NReduce; i++ {
-		reduceTask := ReduceTask{
-			Id:        i,
-			FileNames: m.IntermediateFiles[i],
-			Status:    Ready,
-		}
-		if Debug {
-			log.Printf("reducetask %+v have been created", reduceTask)
-		}
-		m.ReduceTasks = append(m.ReduceTasks, &reduceTask)
-		m.ReduceTaskChan <- &reduceTask
+func (m *Master) getTask(taskSeq int) Task {
+	task := Task{
+		FileName: "",
+		NReduce:  m.nReduce,
+		NMap:     len(m.files),
+		Seq:      taskSeq,
+		Phase:    m.taskPhase,
+		Alive:    true,
 	}
+	DPrintf("m:%+v, taskseq:%d, lenfiles:%d, lents:%d", m, taskSeq, len(m.files), len(m.taskStats))
+	if task.Phase == MapPhase {
+		task.FileName = m.files[taskSeq]
+	}
+	return task
 }
 
-// 获取一个 Task
-func (m *Master) GetTask(args *PullTaskArgs, reply *PullTaskReply) error {
-	select {
-	case mapTask := <-m.MapTaskChan:
-		if Debug {
-			log.Printf("get a map task: %+v", mapTask)
-		}
-		mapTask.Status = Exec
-		reply.Task = *mapTask
-		go m.MonitorMapTask(mapTask)
-	case reduceTask := <-m.ReduceTaskChan:
-		if Debug {
-			log.Printf("get a reduce task: %+v", reduceTask)
-		}
-		reduceTask.Status = Exec
-		reply.Task = *reduceTask
-		go m.MonitorReduceTask(reduceTask)
-	}
-	return nil
-}
-
-// 监控 MapTask, 如果 Work 挂掉,就把 MapTask 重新放入 Channel
-func (m *Master) MonitorMapTask(mapTask *MapTask) {
-	t := time.NewTicker(10 * time.Second)
-	defer t.Stop()
-	for {
-		select {
-		case <-t.C:
-			m.mu.Lock()
-			mapTask.Status = Ready
-			m.MapTaskChan <- mapTask
-			m.mu.Unlock()
-		default:
-			if mapTask.Status == Finish {
-				return
-			}
-			time.Sleep(50 * time.Millisecond)
-		}
-	}
-}
-
-// 监控 ReduceTask, 如果 Work 挂掉,就把 ReduceTask 重新放入 Channel
-func (m *Master) MonitorReduceTask(reduceTask *ReduceTask) {
-	t := time.NewTicker(5 * time.Second)
-	defer t.Stop()
-	for {
-		select {
-		case <-t.C:
-			m.mu.Lock()
-			reduceTask.Status = Ready
-			m.ReduceTaskChan <- reduceTask
-			m.mu.Unlock()
-		default:
-			if reduceTask.Status == Finish {
-				return
-			}
-			time.Sleep(50 * time.Millisecond)
-		}
-	}
-}
-
-// worker 上报任务完成情况
-func (m *Master) ReportFinishTask(args *ReportFinishTaskArgs, reply *ReportFinishTaskReply) error {
-	switch args.Phase {
-	case MapPhase:
-		log.Printf("complete map task %+v\n", args.TaskId)
-		m.mu.Lock()
-		m.MapTasks[args.TaskId].Status = Finish
-		m.NCompleteMap++
-
-		for i := 0; i < m.NReduce; i++ {
-			m.IntermediateFiles[i] = append(m.IntermediateFiles[i], args.IntermediateFiles[i])
-		}
-
-		if m.NCompleteMap == m.NMap {
-			if Debug {
-				log.Printf("map tasks all finish")
-			}
-		}
-		m.Phase = ReducePhase
-		go m.initReduceTasks()
-		m.mu.Unlock()
-	case ReducePhase:
-		log.Printf("complete reduce task %+v\n", args.TaskId)
-		m.mu.Lock()
-		m.ReduceTasks[args.TaskId].Status = Finish
-		m.NCompleteReduce++
-
-		if m.NCompleteReduce == m.NReduce {
-			if Debug {
-				log.Printf("reduce tasks all finish")
-			}
-		}
-		m.mu.Unlock()
-	}
-	return nil
-}
-
-func (m *Master) RegisterWorker(args *RegisterWorkerArgs, reply *RegisterWorkerReply) error {
+func (m *Master) schedule() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	workerSeq++
-	reply.WorkerId = workerSeq
+
+	if m.done {
+		return
+	}
+
+	allFinish := true
+	for index, t := range m.taskStats {
+		switch t.Status {
+		case Ready:
+			allFinish = false
+			m.taskChan <- m.getTask(index)
+			m.taskStats[index].Status = Queue
+		case Queue:
+			allFinish = false
+		case Running:
+			allFinish = false
+			if time.Now().Sub(t.StartTime) > MaxTaskRunTime {
+				m.taskStats[index].Status = Queue
+				m.taskChan <- m.getTask(index)
+			}
+		case Finish:
+		case Err:
+			allFinish = false
+			m.taskStats[index].Status = Queue
+			m.taskChan <- m.getTask(index)
+		default:
+			panic("t.status err")
+		}
+	}
+
+	if allFinish {
+		if m.taskPhase == MapPhase {
+			m.initReduceTask()
+		} else {
+			m.done = true
+		}
+	}
+}
+
+func (m *Master) regTask(args *TaskArgs, task *Task)  {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if task.Phase != m.taskPhase {
+		panic("req task phase neq")
+	}
+	m.taskStats[task.Seq].Status = Running
+	m.taskStats[task.Seq].WorkerId = args.WorkerId
+	m.taskStats[task.Seq].StartTime = time.Now()
+}
+
+func (m *Master) GetOneTask(args *TaskArgs, reply *TaskReply) error {
+	task := <- m.taskChan
+	reply.Task = &task
+
+	if task.Alive {
+		m.regTask(args, &task)
+	}
+	DPrintf("in get one Task, args:%+v, reply:%+v", args, reply)
+	return nil
+}
+
+func (m *Master) ReportTask(args *ReportTaskArgs, reply *ReportTaskReply) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	DPrintf("get report task: %+v, taskPhase: %+v", args, m.taskPhase)
+	if m.taskPhase != args.Phase || args.WorkerId != m.taskStats[args.Seq].WorkerId {
+		return nil
+	}
+	if args.Done {
+		m.taskStats[args.Seq].Status = Finish
+	} else {
+		m.taskStats[args.Seq].Status = Err
+	}
+	go m.schedule()
+	return nil
+}
+
+func (m *Master) RegWorker(args *RegisterArgs, reply *RegisterReply) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.workerSeq++
+	reply.WorkerId = m.workerSeq
 	return nil
 }

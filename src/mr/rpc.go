@@ -23,29 +23,29 @@ type ExampleReply struct {
 }
 
 // Add your RPC definitions here.
-type PullTaskArgs struct {
 
+type TaskArgs struct {
+	WorkerId int
 }
 
-type PullTaskReply struct {
-	Task interface{}
+type TaskReply struct {
+	Task *Task
 }
 
-type ReportFinishTaskArgs struct {
-	TaskId int
-	Phase int
-	IntermediateFiles []string
+type ReportTaskArgs struct {
+	Done     bool
+	Seq      int
+	Phase    TaskPhase
+	WorkerId int
 }
 
-type ReportFinishTaskReply struct {
-
+type ReportTaskReply struct {
 }
 
-type RegisterWorkerArgs struct {
-
+type RegisterArgs struct {
 }
 
-type RegisterWorkerReply struct {
+type RegisterReply struct {
 	WorkerId int
 }
 

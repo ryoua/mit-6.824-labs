@@ -1,36 +1,38 @@
 package mr
 
+import (
+	"fmt"
+	"log"
+)
 
+type TaskPhase int
+
+const (
+	MapPhase TaskPhase = 0
+	ReducePhase TaskPhase = 1
+)
 
 const Debug = false
 
-const (
-	MapPhase int = 1
-	ReducePhase int = 2
-)
-
-const (
-	Ready = 1
-	Exec = 2
-	Finish = 3
-)
-
-type WorkerMachine struct {
-	Id int
-	Status int
+func DPrintf(format string, v ...interface{}) {
+	if Debug {
+		log.Printf(format + "\n", v...)
+	}
 }
 
-type MapTask struct {
-	Id int
+type Task struct {
 	FileName string
-	Status int
 	NReduce int
-	WorkId int
+	NMap int
+	Seq int
+	Phase TaskPhase
+	Alive bool
 }
 
-type ReduceTask struct {
-	Id int
-	FileNames []string
-	Status int
-	WorkerId int
+func reduceName(mapIdx, reduceIdx int) string {
+	return fmt.Sprintf("mr-%d-%d", mapIdx, reduceIdx)
+}
+
+func mergeName(reduceIdx int) string {
+	return fmt.Sprintf("mr-out-%d", reduceIdx)
 }
